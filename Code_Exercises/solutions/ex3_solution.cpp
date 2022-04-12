@@ -28,7 +28,7 @@ int main() {
 
     q.submit([&](sycl::handler &cgh) {
       auto accA = bufA.get_access<sycl::access::mode::read_write>(cgh);
-      auto accB = bufB.get_access<sycl::read_only>(cgh);
+      auto accB = bufB.get_access<sycl::access::mode::read>(cgh);
       cgh.single_task([=]() { accA[0] += accB[0]; });
     }); 
   } // Memory is updated once buffers are destroyed
