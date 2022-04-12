@@ -1,73 +1,51 @@
 #include <CL/sycl.hpp>
 #include <iostream>
 
-constexpr size_t dataSize = 16'384;
-constexpr size_t wkgrp_sz = 32;
-
-template <typename T>
-void flip_array(T *in_array, T *out_array, const size_t sz) {
-  for (auto i = 0u; i < sz; i++) {
-    out_array[i] = in_array[sz - 1 - i];
-  }
-}
-
-template <typename T> void check_arrays(T *a, T *b, const size_t sz) {
-  bool no_errors = true;
-  for (auto i = 0u; i < sz; i++) {
-    if (a[i] != b[i]) {
-      std::cout << "a[" << i << "] != b[" << i << "] "
-                << "\na[i] = " << a[i] << "\tb[i] = " << b[i] << '\n';
-      no_errors = false;
-    }
-  }
-  if (no_errors)
-    std::cout << "Flip completed successfully!\n";
-}
-
-using T = float;
-
 int main() {
+  constexpr size_t dataSize = 1024;
 
-  T a[dataSize], serial_flipped[dataSize], dev_flipped[dataSize];
+  float a[dataSize], b[dataSize], r[dataSize];
   for (int i = 0; i < dataSize; ++i) {
-    a[i] = static_cast<T>(i);
+    a[i] = static_cast<float>(i);
+    b[i] = static_cast<float>(i);
+    r[i] = 0.0f;
   }
 
-  // Allocate memory on device
+  // Task: Compute r[i] = a[i] + b[i] in parallel on the SYCL device
+  //
+  // Construct a queue
   auto q = sycl::queue{};
 
-  auto my_nd = sycl::nd_range(sycl::range(dataSize), sycl::range(wkgrp_sz));
+  // Allocate memory on device
+  auto *devPtrA = sycl::malloc_device<float>(dataSize, q);
+  auto *devPtrB = sycl::malloc_device<float>(dataSize, q);
+  auto *devPtrR = sycl::malloc_device<float>(dataSize, q);
 
-  T *devPtrA = sycl::malloc_device<T>(dataSize, q);
-  T *devPtrB = sycl::malloc_device<T>(dataSize, q);
+  // Copy memory to device
+  auto e1 = q.memcpy(devPtrA, a, sizeof(float) * dataSize);
+  auto e2 = q.memcpy(devPtrB, b, sizeof(float) * dataSize);
 
-  q.memcpy(devPtrA, a, sizeof(T) * dataSize).wait();
-
-  q.submit([&](sycl::handler &cgh) {
-     sycl::accessor<T, 1, sycl::access::mode::read_write,
-                    sycl::access::target::local>
-         local_mem(sycl::range<1>(wkgrp_sz), cgh);
-
-     cgh.parallel_for(my_nd, [=](sycl::nd_item<1> item) {
-       auto localIdx = item.get_local_linear_id();
-       auto globalIdx = item.get_global_linear_id();
-       auto groupIdx = item.get_group_linear_id();
-       auto num_groups = item.get_group_range(0);
-
-       local_mem[localIdx] = devPtrA[globalIdx];
-       item.barrier();
-       devPtrB[(num_groups - groupIdx - 1) * wkgrp_sz + localIdx] =
-           local_mem[wkgrp_sz - localIdx - 1];
-     });
+  // Use a parallel_for to add the two arrays
+  q.parallel_for(sycl::range{dataSize}, {e1, e2}, [=](sycl::id<1> idx) {
+     auto globalId = idx[0];
+     devPtrR[globalId] = devPtrA[globalId] + devPtrB[globalId];
    }).wait();
 
-  q.memcpy(dev_flipped, devPtrB, sizeof(T) * dataSize).wait();
-
-  flip_array(a, serial_flipped, dataSize);
+  // Transfer memory back to device
+  q.memcpy(r, devPtrR, sizeof(float) * dataSize).wait();
 
   // Check result
-  check_arrays(serial_flipped, dev_flipped, dataSize);
+  bool correct_result = true;
+  for (int i = 0; i < dataSize; ++i) {
+    if (r[i] != static_cast<float>(i) * 2.0f) {
+      std::cout << "r[i] != i * 2 for i = " << i << "\tr[i] = " << r[i] << '\n';
+      correct_result = false;
+    } 
+  }
+
+  if (correct_result) std::cout << "Correct result!\n";
 
   sycl::free(devPtrA, q);
   sycl::free(devPtrB, q);
+  sycl::free(devPtrR, q);
 }
